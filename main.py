@@ -1,6 +1,6 @@
 from bambooapi import Bamboo, Response
 
-app = Bamboo(title="Notes API", version="0.1.0")
+app = Bamboo(title="Notes API", version="0.1.1")
 
 notes = {}
 next_id = {"value": 1}

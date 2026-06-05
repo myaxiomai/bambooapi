@@ -8,7 +8,7 @@ No magic. No hidden complexity. Just clean, honest Python.
 ## Install
 
 ```bash
-pip install bambooapi
+pip install bambooapi-framework
 ```
 
 ## Quickstart

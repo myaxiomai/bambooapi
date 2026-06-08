@@ -1,5 +1,6 @@
 import json
 import re
+from urllib.parse import parse_qs
 
 
 BAMBOO_DOCS_HTML = r"""<!DOCTYPE html>
@@ -162,6 +163,12 @@ function resolvedPath(r){
     var el=document.getElementById('pi_'+param.name);
     p=p.replace('{'+param.name+'}',el&&el.value?el.value:'{'+param.name+'}');
   });
+  var qparts=[];
+  (r.queryParams||[]).forEach(function(param){
+    var el=document.getElementById('qp_'+param.name);
+    if(el&&el.value)qparts.push(encodeURIComponent(param.name)+'='+encodeURIComponent(el.value));
+  });
+  if(qparts.length)p+='?'+qparts.join('&');
   return p;
 }
 
@@ -199,6 +206,16 @@ function renderDetail(){
     h+='</div>';
   }
 
+  if(r.queryParams&&r.queryParams.length){
+    h+='<div class="sgap"><div class="slabel">Query parameters</div>';
+    r.queryParams.forEach(function(p){
+      h+='<div class="prow"><code class="pname">'+p.name+'</code>'+
+        '<span class="pill pt">'+p.type+'</span>'+
+        '<span class="pill pt" style="color:var(--txt3)">optional</span>'+
+        (tryOpen?'<input id="qp_'+p.name+'" class="pinput" type="text" placeholder="'+p.name+'"/>':'')+'</div>';
+    });
+    h+='</div>';
+  }
   if(r.body!==null){
     h+='<div class="sgap"><div class="slabel">Request body '+
       '<span style="font-weight:400;color:var(--txt2);font-size:11px;margin-left:6px;">application/json</span></div>';
@@ -225,11 +242,18 @@ function renderDetail(){
       '<div class="slb">Curl</div>'+
       '<div class="cblock">'+esc(lastRes.curl)+'</div></div>';
   } else if(!tryOpen){
-    h+='<div class="rsec"><div class="slabel" style="margin-top:0;">Responses</div>'+
-      '<div style="display:flex;align-items:flex-start;gap:10px;padding:6px 0;">'+
-      '<span class="scode s2xx">200</span>'+
-      '<div style="font-size:12px;color:var(--txt2);padding-top:2px;">Successful response</div>'+
-      '</div></div>';
+    h+='<div class="rsec"><div class="slabel" style="margin-top:0;">Responses</div>';
+    var resKeys=Object.keys(r.responses||{});
+    if(!resKeys.length)resKeys=['200'];
+    resKeys.forEach(function(code){
+      var desc=(r.responses&&r.responses[code]&&r.responses[code].description)||'Successful Response';
+      var n=parseInt(code,10);
+      var cls=n<300?'s2xx':n<500?'s4xx':'s5xx';
+      h+='<div style="display:flex;align-items:flex-start;gap:10px;padding:6px 0;">'+
+        '<span class="scode '+cls+'">'+code+'</span>'+
+        '<div style="font-size:12px;color:var(--txt2);padding-top:2px;">'+esc(desc)+'</div></div>';
+    });
+    h+='</div>';
   }
 
   document.getElementById('detail').innerHTML=h;
@@ -274,12 +298,17 @@ function loadSpec(){
           .filter(function(p){return p.in==='path';})
           .map(function(p){return{name:p.name,type:(p.schema&&p.schema.type)||'string'};});
         var hasBody=['POST','PUT','PATCH'].indexOf(method.toUpperCase())>=0;
+        var queryParams=(op.parameters||[])
+          .filter(function(p){return p.in==='query';})
+          .map(function(p){return{name:p.name,type:(p.schema&&p.schema.type)||'string'};});
         routes.push({
           method:method.toUpperCase(),
           path:path,
           summary:op.summary||path,
           params:params,
-          body:hasBody?[]:null
+          body:hasBody?[]:null,
+          responses:op.responses||({}),
+          queryParams:queryParams
         });
       });
     });
@@ -310,6 +339,9 @@ class Request:
         self.receive = receive
         self.method = scope["method"]
         self.path = scope["path"]
+        qs = scope.get("query_string", b"").decode("utf-8")
+        parsed = parse_qs(qs, keep_blank_values=True) if qs else {}
+        self.query_params = {k: v[0] for k, v in parsed.items()}
 
     async def body(self):
         chunks = []
@@ -333,24 +365,24 @@ class Bamboo:
         self.version = version
         self.routes = []
 
-    def route(self, method, path):
+    def route(self, method, path, responses=None, query=None):
         pattern = self.compile_path(path)
         def decorator(func):
-            self.routes.append((method.upper(), path, pattern, func))
+            self.routes.append((method.upper(), path, pattern, func, responses, query))
             return func
         return decorator
 
-    def get(self, path):
-        return self.route("GET", path)
+    def get(self, path, responses=None, query=None):
+        return self.route("GET", path, responses=responses, query=query)
 
-    def post(self, path):
-        return self.route("POST", path)
+    def post(self, path, responses=None, query=None):
+        return self.route("POST", path, responses=responses, query=query)
 
-    def put(self, path):
-        return self.route("PUT", path)
+    def put(self, path, responses=None, query=None):
+        return self.route("PUT", path, responses=responses, query=query)
 
-    def delete(self, path):
-        return self.route("DELETE", path)
+    def delete(self, path, responses=None, query=None):
+        return self.route("DELETE", path, responses=responses, query=query)
 
     def compile_path(self, path):
         segments = [s for s in path.split("/") if s != ""]
@@ -369,7 +401,7 @@ class Bamboo:
 
     def openapi(self):
         paths = {}
-        for method, path, pattern, handler in self.routes:
+        for method, path, pattern, handler, responses, query in self.routes:
             param_names = re.findall(r"{([^}]+)}", path)
             parameters = [
                 {
@@ -380,11 +412,26 @@ class Bamboo:
                 }
                 for name in param_names
             ]
+            if query:
+                for qname, qtype in query.items():
+                    parameters.append({
+                        "name": qname,
+                        "in": "query",
+                        "required": False,
+                        "schema": {"type": qtype},
+                    })
             doc = (handler.__doc__ or "").strip()
             summary = doc.splitlines()[0] if doc else handler.__name__
+            if responses:
+                op_responses = {
+                    str(code): {"description": desc}
+                    for code, desc in responses.items()
+                }
+            else:
+                op_responses = {"200": {"description": "Successful Response"}}
             operation = {
                 "summary": summary,
-                "responses": {"200": {"description": "Successful Response"}},
+                "responses": op_responses,
             }
             if parameters:
                 operation["parameters"] = parameters
@@ -416,7 +463,7 @@ class Bamboo:
             await self.send_html(send, docs)
             return
 
-        for route_method, route_path, pattern, handler in self.routes:
+        for route_method, route_path, pattern, handler, _responses, _query in self.routes:
             if route_method != method:
                 continue
             match = pattern.match(path)

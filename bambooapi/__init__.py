@@ -339,6 +339,10 @@ class Request:
         self.receive = receive
         self.method = scope["method"]
         self.path = scope["path"]
+        self.headers = {
+            k.decode("utf-8").lower(): v.decode("utf-8")
+            for k, v in scope.get("headers", [])
+        }
         qs = scope.get("query_string", b"").decode("utf-8")
         parsed = parse_qs(qs, keep_blank_values=True) if qs else {}
         self.query_params = {k: v[0] for k, v in parsed.items()}
@@ -364,6 +368,11 @@ class Bamboo:
         self.title = title
         self.version = version
         self.routes = []
+        self.middlewares = []
+
+    def middleware(self, func):
+        self.middlewares.append(func)
+        return func
 
     def route(self, method, path, responses=None, query=None):
         pattern = self.compile_path(path)
@@ -470,7 +479,12 @@ class Bamboo:
             if match:
                 params = match.groupdict()
                 try:
-                    result = await handler(request, **params)
+                    async def endpoint(req, _params=params, _handler=handler):
+                        return await _handler(req, **_params)
+                    chain = endpoint
+                    for mw in reversed(self.middlewares):
+                        chain = self._wrap(mw, chain)
+                    result = await chain(request)
                     if isinstance(result, Response):
                         await self.send_response(send, result)
                     else:
@@ -482,6 +496,11 @@ class Bamboo:
                 return
 
         await self.send_json(send, {"error": "not found"}, 404)
+
+    def _wrap(self, middleware, next_handler):
+        async def wrapped(request):
+            return await middleware(request, next_handler)
+        return wrapped
 
     async def send_json(self, send, data, status=200):
         body = json.dumps(data).encode("utf-8")

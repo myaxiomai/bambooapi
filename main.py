@@ -25,6 +25,17 @@ init_db()
 app = Bamboo(title="Notes API", version="0.1.2")
 
 
+@app.middleware
+async def timer(request, next):
+    """Log method, path, and response time for every request."""
+    import time
+    t0 = time.monotonic()
+    response = await next(request)
+    ms = round((time.monotonic() - t0) * 1000, 1)
+    print(f"[bamboo] {request.method} {request.path} {ms}ms")
+    return response
+
+
 @app.get("/", responses={200: "Welcome message"})
 async def home(request):
     """Welcome message."""

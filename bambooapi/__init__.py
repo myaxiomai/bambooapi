@@ -332,7 +332,32 @@ class Response:
     def __init__(self, body, status=200, headers=None):
         self.body = body
         self.status = status
-        self.headers = headers or []
+        self._headers = []
+        if headers:
+            if isinstance(headers, dict):
+                for k, v in headers.items():
+                    self._headers.append((k.lower().encode(), str(v).encode()))
+            else:
+                for item in headers:
+                    k, v = item
+                    if isinstance(k, str):
+                        k = k.lower().encode()
+                    if isinstance(v, str):
+                        v = v.encode()
+                    self._headers.append((k, v))
+
+    @property
+    def headers(self):
+        return self._headers
+
+    def header(self, name, value):
+        """Add a response header. Returns self for chaining.
+
+        Example:
+            return Response({"ok": True}).header("X-Request-Id", "abc123")
+        """
+        self._headers.append((name.lower().encode(), str(value).encode()))
+        return self
 
 
 class Request:

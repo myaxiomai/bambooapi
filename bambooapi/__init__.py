@@ -396,6 +396,7 @@ class Bamboo:
         self.version = version
         self.routes = []
         self._static_mounts = []
+        self._error_handlers = {}
         self.middlewares = []
 
     def middleware(self, func):
@@ -536,10 +537,8 @@ class Bamboo:
                         await self.send_response(send, result)
                     else:
                         await self.send_json(send, result)
-                except Exception:
-                    await self.send_json(
-                        send, {"error": "internal server error"}, 500
-                    )
+                except Exception as _exc:
+                    await self._dispatch_error(send, request, 500, exc=_exc)
                 return
 
         await self.send_json(send, {"error": "not found"}, 404)
@@ -586,6 +585,49 @@ class Bamboo:
             "headers": headers,
         })
         await send({"type": "http.response.body", "body": body})
+
+    def error_handler(self, status_code):
+        """Register a custom handler for a given HTTP status code.
+
+        The handler receives (request) for 404, or (request, exc) for 500.
+
+        Example::
+
+            @app.error_handler(404)
+            async def not_found(request):
+                return {"error": "nothing here", "path": request.path}
+
+            @app.error_handler(500)
+            async def server_error(request, exc):
+                return {"error": "something broke", "detail": str(exc)}
+        """
+        def decorator(func):
+            self._error_handlers[status_code] = func
+            return func
+        return decorator
+
+    async def _dispatch_error(self, send, request, status_code, exc=None):
+        """Call the registered error handler, or fall back to default JSON."""
+        import inspect
+        handler = self._error_handlers.get(status_code)
+        if handler:
+            sig = inspect.signature(handler)
+            params = list(sig.parameters.keys())
+            if len(params) >= 2 and exc is not None:
+                result = await handler(request, exc)
+            else:
+                result = await handler(request)
+            if isinstance(result, Response):
+                await self.send_response(send, result)
+            else:
+                await self.send_json(send, result, status_code)
+        else:
+            if status_code == 404:
+                await self._dispatch_error(send, request, 404)
+            elif status_code == 500:
+                await self.send_json(send, {"error": "internal server error"}, 500)
+            else:
+                await self.send_json(send, {"error": "error"}, status_code)
 
     def static(self, url_prefix, directory):
         """Register a directory to serve static files from a URL prefix."""

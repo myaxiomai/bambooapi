@@ -1,4 +1,6 @@
 import json
+import mimetypes
+import os
 import re
 from urllib.parse import parse_qs
 
@@ -368,6 +370,7 @@ class Bamboo:
         self.title = title
         self.version = version
         self.routes = []
+        self._static_mounts = []
         self.middlewares = []
 
     def middleware(self, func):
@@ -472,6 +475,25 @@ class Bamboo:
             await self.send_html(send, docs)
             return
 
+        # Static file serving
+        if method == "GET":
+            for prefix, directory in self._static_mounts:
+                if path == prefix or path.startswith(prefix + "/"):
+                    import os, mimetypes
+                    rel = path[len(prefix):]
+                    safe = os.path.normpath(rel).lstrip("/\\")
+                    file_path = os.path.join(directory, safe)
+                    if not os.path.isfile(file_path):
+                        await self.send_json(send, {"error": "not found"}, 404)
+                        return
+                    mime, _ = mimetypes.guess_type(file_path)
+                    mime = mime or "application/octet-stream"
+                    with open(file_path, "rb") as f:
+                        body = f.read()
+                    await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", mime.encode()), (b"content-length", str(len(body)).encode())]})
+                    await send({"type": "http.response.body", "body": body})
+                    return
+
         for route_method, route_path, pattern, handler, _responses, _query in self.routes:
             if route_method != method:
                 continue
@@ -539,3 +561,11 @@ class Bamboo:
             "headers": headers,
         })
         await send({"type": "http.response.body", "body": body})
+
+    def static(self, url_prefix, directory):
+        """Register a directory to serve static files from a URL prefix."""
+        import os
+        self._static_mounts.append((
+            url_prefix.rstrip("/"),
+            os.path.abspath(directory),
+        ))

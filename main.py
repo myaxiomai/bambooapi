@@ -22,7 +22,8 @@ def init_db():
 
 init_db()
 
-app = Bamboo(title="Notes API", version="0.1.2")
+app = Bamboo(title="Notes API", version="0.1.5")
+app.static("/static", "/home/axiomapi/static")
 
 
 @app.middleware
